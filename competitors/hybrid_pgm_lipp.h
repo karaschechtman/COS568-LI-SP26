@@ -110,8 +110,8 @@ class HybridPGMLIPP : public Base<KeyType> {
   // Naive flush: extract all from DPGM and insert into LIPP
   void Flush() {
 
-    // Extract all data from DPGM
-    auto it = dpgm_.begin();
+    // Extract all data from DPGM using lower_bound (begin() has template issues)
+    auto it = dpgm_.lower_bound(std::numeric_limits<KeyType>::min());
     while (it != dpgm_.end()) {
       lipp_.insert(it->key(), it->value());
       ++it;

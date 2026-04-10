@@ -12,7 +12,7 @@ echo "Step 1: Downloading dataset..."
 ./scripts/download_dataset.sh
 
 echo "Step 2: Creating minimal CMakeLists.txt..."
-./scripts/create_minimal_cmake_hybrid.sh
+./scripts/create_minimal_cmake.sh
 
 echo "Step 3: Generating lookup workloads..."
 ./scripts/generate_hybrid_workloads.sh

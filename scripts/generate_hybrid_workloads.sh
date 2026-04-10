@@ -18,5 +18,3 @@ function generate_uint64_100M() {
 
 # Generate just the fb_100M dataset workloads
 generate_uint64_100M fb_100M_public_uint64
-
-done
