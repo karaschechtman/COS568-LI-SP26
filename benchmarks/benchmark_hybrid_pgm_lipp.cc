@@ -1,6 +1,6 @@
 #include "benchmarks/benchmark_hybrid_pgm_lipp.h"
 
-#include "benchmarks.h"
+#include "benchmark.h"
 #include "benchmarks/common.h"
 #include "competitors/hybrid_pgm_lipp.h"
 
