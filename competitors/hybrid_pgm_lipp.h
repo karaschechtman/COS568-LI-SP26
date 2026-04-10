@@ -127,7 +127,7 @@ class HybridPGMLIPP : public Base<KeyType> {
 
   DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
                   PGMIndex<KeyType, SearchClass, pgm_error, 16>> dpgm_;
-  Lipp<KeyType> lipp_;
+  LIPP<KeyType> lipp_;
 
   size_t total_keys_ = 0;
   size_t dpgm_element_count_ = 0; 
