@@ -11,22 +11,13 @@
 #include "./lipp/src/core/lipp.h"
 #include "pgm_index_dynamic.hpp"
 
-// Simple file-based logging that doesn't depend on buffering
-inline void hybrid_log(const std::string& msg) {
-  std::ofstream log("/scratch/network/ks7893/COS568-LI-SP26/hybrid_debug.log", std::ios::app);
-  log << msg << "\n";
-  log.flush();
-}
-
 template <class KeyType, class SearchClass, size_t pgm_error = 16, uint32_t flush_ratio = 50>
 class HybridPGMLIPP : public Base<KeyType> {
  public:
   HybridPGMLIPP(const std::vector<int>& params) { 
-    hybrid_log("HYBRIDPGMLIPP CONSTRUCTOR CALLED");
   }
 
   uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) {
-    hybrid_log("BUILD START");
     total_keys_ = data.size();
 
     // Load all initial data into LIPP
@@ -40,7 +31,6 @@ class HybridPGMLIPP : public Base<KeyType> {
       lipp_.bulk_load(loading_data.data(), loading_data.size());
     });
 
-    hybrid_log("BUILD END");
     return build_time;
   }
 
@@ -80,23 +70,18 @@ class HybridPGMLIPP : public Base<KeyType> {
     return result;
   }
 
-  void Insert(const KeyValue<KeyType>& data, uint32_t thread_id) {
-    hybrid_log("INSERT CALLED with key");
-    
-    // Add to DPGM
+  void Insert(const KeyValue<KeyType>& data, uint32_t thread_id) {   
+    // Add to DGPM
     dpgm_.insert(data.key, data.value);
     dpgm_element_count_++;
     total_keys_++;
-
     // Calculate flush threshold based on current total (flush_ratio is in tenths of percent)
     size_t current_threshold = (total_keys_ * flush_ratio) / 10000;
     if (current_threshold == 0) current_threshold = 1;
 
     // Check if we need to flush
     if (dpgm_element_count_ >= current_threshold) {
-      hybrid_log("FLUSH TRIGGERED");
       Flush();
-      hybrid_log("FLUSH COMPLETE");
     }
   }
 
@@ -125,44 +110,27 @@ class HybridPGMLIPP : public Base<KeyType> {
  private:
   // Naive flush: extract all from DPGM and insert into LIPP
   void Flush() {
-    hybrid_log("FLUSH START");
     
     // Collect all data from DPGM first
     std::vector<std::pair<KeyType, uint64_t>> dpgm_data;
     
-    try {
-      auto it = dpgm_.lower_bound(std::numeric_limits<KeyType>::min());
-      hybrid_log("lower_bound succeeded");
-      
-      size_t count = 0;
-      while (it != dpgm_.end()) {
-        dpgm_data.push_back(std::make_pair(it->key(), it->value()));
-        ++it;
-        count++;
-      }
-      hybrid_log("Collected items: " + std::to_string(count));
-
-      // Now insert all collected data into LIPP
-      for (const auto& pair : dpgm_data) {
-        lipp_.insert(pair.first, pair.second);
-      }
-      hybrid_log("LIPP insert done");
-
-      // Clear DPGM by rebuilding it empty
-      dpgm_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
-                               PGMIndex<KeyType, SearchClass, pgm_error, 16>>();
-      hybrid_log("DPGM rebuild done");
-      
-      // Reset element count
-      dpgm_element_count_ = 0;
-      hybrid_log("FLUSH END");
-    } catch (const std::exception& e) {
-      hybrid_log(std::string("FLUSH EXCEPTION: ") + e.what());
-      throw;
-    } catch (...) {
-      hybrid_log("FLUSH UNKNOWN EXCEPTION");
-      throw;
+    auto it = dpgm_.lower_bound(std::numeric_limits<KeyType>::min());
+    while (it != dpgm_.end()) {
+      dpgm_data.push_back(std::make_pair(it->key(), it->value()));
+      ++it;
     }
+
+    // Now insert all collected data into LIPP
+    for (const auto& pair : dpgm_data) {
+      lipp_.insert(pair.first, pair.second);
+    }
+
+    // Clear DPGM by rebuilding it empty
+    dpgm_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
+                             PGMIndex<KeyType, SearchClass, pgm_error, 16>>();
+    
+    // Reset element count
+    dpgm_element_count_ = 0;
   }
 
   DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
