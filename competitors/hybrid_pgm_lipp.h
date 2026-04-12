@@ -109,21 +109,13 @@ class HybridPGMLIPP : public Base<KeyType> {
 
  private:
   // Naive flush: extract all from DPGM and insert into LIPP
-  void Flush() {
-    
-    // Collect all data from DPGM first
-    std::vector<std::pair<KeyType, uint64_t>> dpgm_data;
-    
+  void Flush() {    
     auto it = dpgm_.lower_bound(std::numeric_limits<KeyType>::min());
     while (it != dpgm_.end()) {
-      dpgm_data.push_back(std::make_pair(it->key(), it->value()));
+      lipp_.insert(it->key(), it->value());
       ++it;
     }
 
-    // Now insert all collected data into LIPP
-    for (const auto& pair : dpgm_data) {
-      lipp_.insert(pair.first, pair.second);
-    }
 
     // Clear DPGM by rebuilding it empty
     dpgm_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
