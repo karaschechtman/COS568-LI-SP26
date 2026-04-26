@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 #include <fstream>
+#include <functional>
 
 #include "../util.h"
 #include "base.h"
@@ -17,14 +18,45 @@ class HybridPGMLIPP : public Base<KeyType> {
   HybridPGMLIPP(const std::vector<int>& params) { 
   }
 
+  // Simple bloom filter helpers using two hash functions
+  inline size_t hash1(const KeyType& key) const {
+    return std::hash<KeyType>()(key);
+  }
+
+  inline size_t hash2(const KeyType& key) const {
+    return std::hash<KeyType>()(key) ^ 0x5555555555555555ULL;
+  }
+
+  void set_filter_bit(const KeyType& key) {
+    if (bloom_filter_.empty()) return;
+    size_t h1 = hash1(key) % (bloom_filter_.size() * 8);
+    size_t h2 = hash2(key) % (bloom_filter_.size() * 8);
+    bloom_filter_[h1 / 8] |= (1u << (h1 % 8));
+    bloom_filter_[h2 / 8] |= (1u << (h2 % 8));
+  }
+
+  bool check_filter_bit(const KeyType& key) const {
+    if (bloom_filter_.empty()) return false;
+    size_t h1 = hash1(key) % (bloom_filter_.size() * 8);
+    size_t h2 = hash2(key) % (bloom_filter_.size() * 8);
+    return ((bloom_filter_[h1 / 8] & (1u << (h1 % 8))) != 0) &&
+           ((bloom_filter_[h2 / 8] & (1u << (h2 % 8))) != 0);
+  }
+
   uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) {
     total_keys_ = data.size();
+
+    // Initialize bloom filter: allocate ~2 bits per key for lower false positive rate
+    size_t filter_bytes = (data.size() * 2) / 8 + 1;
+    bloom_filter_.resize(filter_bytes, 0);
 
     // Load all initial data into LIPP
     std::vector<std::pair<KeyType, uint64_t>> loading_data;
     loading_data.reserve(data.size());
     for (const auto& itm : data) {
       loading_data.push_back(std::make_pair(itm.key, itm.value));
+      // Mark all initial keys as being in LIPP
+      set_filter_bit(itm.key);
     }
 
     uint64_t build_time = util::timing([&] {
@@ -35,18 +67,21 @@ class HybridPGMLIPP : public Base<KeyType> {
   }
 
   size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const {
-    // Check DPGM first for exact match
+    // Check LIPP first if bloom filter suggests key is there
+    if (check_filter_bit(lookup_key)) {
+      uint64_t value;
+      if (lipp_.find(lookup_key, value)) {
+        return value;
+      }
+    }
+
+    // Check DPGM (either bloom said not in LIPP, or it was a false positive)
     auto it = dpgm_.find(lookup_key);
     if (it != dpgm_.end()) {
       return it->value();
     }
 
-    // Fall back to LIPP
-    uint64_t value;
-    if (!lipp_.find(lookup_key, value)) {
-      return util::NOT_FOUND;
-    }
-    return value;
+    return util::NOT_FOUND;
   }
 
   uint64_t RangeQuery(const KeyType& lower_key, const KeyType& upper_key, uint32_t thread_id) const {
@@ -88,7 +123,7 @@ class HybridPGMLIPP : public Base<KeyType> {
   std::string name() const { return "HybridPGMLIPP"; }
 
   std::size_t size() const {
-    return dpgm_.size_in_bytes() + lipp_.index_size();
+    return dpgm_.size_in_bytes() + lipp_.index_size() + bloom_filter_.size();
   }
 
   bool applicable(bool unique, bool range_query, bool insert, bool multithread, 
@@ -113,9 +148,10 @@ class HybridPGMLIPP : public Base<KeyType> {
     auto it = dpgm_.lower_bound(std::numeric_limits<KeyType>::min());
     while (it != dpgm_.end()) {
       lipp_.insert(it->key(), it->value());
+      // Mark flushed key as being in LIPP
+      set_filter_bit(it->key());
       ++it;
     }
-
 
     // Clear DPGM by rebuilding it empty
     dpgm_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
@@ -128,6 +164,7 @@ class HybridPGMLIPP : public Base<KeyType> {
   DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
                   PGMIndex<KeyType, SearchClass, pgm_error, 16>> dpgm_;
   LIPP<KeyType, uint64_t> lipp_;
+  std::vector<uint8_t> bloom_filter_;
 
   size_t total_keys_ = 0;
   size_t dpgm_element_count_ = 0; 
