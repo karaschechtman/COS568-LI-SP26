@@ -76,14 +76,20 @@ class HybridPGMLIPP : public Base<KeyType> {
     }
     // Early exit on Bloom filter miss (append-only, safe to check without lock).
     if (!bloom_filter_.Contains(lookup_key)) return util::NOT_FOUND;
+    
+    // Skip DPGM checks if both buffers are empty (common on 90% lookup workloads).
+    if (dpgm_element_count_ == 0 && dpgm_flush_element_count_ == 0) {
+      return util::NOT_FOUND;
+    }
+    
     // Check dpgm_active_ for recent inserts.
-    {
+    if (dpgm_element_count_ > 0) {
       std::shared_lock<std::shared_mutex> lock(dpgm_mutex_);
       auto it = dpgm_active_.find(lookup_key);
       if (it != dpgm_active_.end()) return it->value();
     }
     // Check dpgm_flush_ (background thread may be flushing)
-    {
+    if (dpgm_flush_element_count_ > 0) {
       std::shared_lock<std::shared_mutex> lock(dpgm_flush_mutex_);
       auto it = dpgm_flush_.find(lookup_key);
       if (it != dpgm_flush_.end()) return it->value();
@@ -94,7 +100,7 @@ class HybridPGMLIPP : public Base<KeyType> {
   uint64_t RangeQuery(const KeyType& lower_key, const KeyType& upper_key, uint32_t thread_id) const {
     uint64_t result = 0;
     // dpgm_active_
-    {
+    if (dpgm_element_count_ > 0) {
       std::shared_lock<std::shared_mutex> lock(dpgm_mutex_);
       auto it = dpgm_active_.lower_bound(lower_key);
       while (it != dpgm_active_.end() && it->key() <= upper_key) {
@@ -103,7 +109,7 @@ class HybridPGMLIPP : public Base<KeyType> {
       }
     }
     // dpgm_flush_
-    {
+    if (dpgm_flush_element_count_ > 0) {
       std::shared_lock<std::shared_mutex> lock(dpgm_flush_mutex_);
       auto it = dpgm_flush_.lower_bound(lower_key);
       while (it != dpgm_flush_.end() && it->key() <= upper_key) {
@@ -157,6 +163,7 @@ class HybridPGMLIPP : public Base<KeyType> {
         {
           std::unique_lock<std::shared_mutex> flush_lock(dpgm_flush_mutex_);
           std::swap(dpgm_active_, dpgm_flush_);
+          dpgm_flush_element_count_.store(dpgm_element_count_.load());  // save count of flushed buffer
           dpgm_element_count_ = 0;
         }
       }
@@ -173,6 +180,7 @@ class HybridPGMLIPP : public Base<KeyType> {
         }
         dpgm_flush_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
                                       PGMIndex<KeyType, SearchClass, pgm_error, 16>>();
+        dpgm_flush_element_count_ = 0;
       }
     }
   }
@@ -192,4 +200,5 @@ class HybridPGMLIPP : public Base<KeyType> {
 
   std::atomic<size_t> total_keys_ = 0;
   std::atomic<size_t> dpgm_element_count_ = 0;
+  std::atomic<size_t> dpgm_flush_element_count_ = 0;
 };
