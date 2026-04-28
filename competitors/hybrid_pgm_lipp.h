@@ -70,10 +70,11 @@ class HybridPGMLIPP : public Base<KeyType> {
   size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const {
     // Check LIPP first (has most data on low-insert workloads).
     uint64_t value;
-    {
-      std::shared_lock<std::shared_mutex> lock(lipp_mutex_);
-      if (lipp_.find(lookup_key, value)) return value;
+    // Lock-free read: spin briefly if LIPP is being modified by flush thread.
+    while (lipp_being_modified_.load(std::memory_order_acquire)) {
+      // spin
     }
+    if (lipp_.find(lookup_key, value)) return value;
     // Early exit on Bloom filter miss (append-only, safe to check without lock).
     if (!bloom_filter_.Contains(lookup_key)) return util::NOT_FOUND;
     
@@ -117,9 +118,11 @@ class HybridPGMLIPP : public Base<KeyType> {
         ++it;
       }
     }
-    // LIPP
+    // LIPP (lock-free read; spin only while LIPP is being modified)
+    while (lipp_being_modified_.load(std::memory_order_acquire)) {
+      // spin
+    }
     {
-      std::shared_lock<std::shared_mutex> lock(lipp_mutex_);
       auto it = lipp_.lower_bound(lower_key);
       while (it != lipp_.end() && it->comp.data.key <= upper_key) {
           result += it->comp.data.value;
@@ -172,11 +175,13 @@ class HybridPGMLIPP : public Base<KeyType> {
         std::unique_lock<std::shared_mutex> flush_lock(dpgm_flush_mutex_);
         auto it = dpgm_flush_.lower_bound(std::numeric_limits<KeyType>::min());
         {
-          std::unique_lock<std::shared_mutex> lock(lipp_mutex_);
+          // Set modification flag so readers spin briefly and then read lock-free
+          lipp_being_modified_.store(true, std::memory_order_release);
           while (it != dpgm_flush_.end()) {
             lipp_.insert(it->key(), it->value());
             ++it;
           }
+          lipp_being_modified_.store(false, std::memory_order_release);
         }
         dpgm_flush_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
                                       PGMIndex<KeyType, SearchClass, pgm_error, 16>>();
@@ -194,7 +199,7 @@ class HybridPGMLIPP : public Base<KeyType> {
 
   mutable std::shared_mutex dpgm_mutex_; // protects dpgm_active_, total_keys_, dpgm_element_count_
   mutable std::shared_mutex dpgm_flush_mutex_; // protects dpgm_flush_
-  mutable std::shared_mutex lipp_mutex_;
+  std::atomic<bool> lipp_being_modified_ = false;
   std::thread flush_thread_;
   std::atomic<bool> stop_flush_thread_ = false;
 
