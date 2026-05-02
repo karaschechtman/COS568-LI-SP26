@@ -19,7 +19,7 @@ function execute_uint64_100M() {
 mkdir -p ./results
 
 DATA=fb_100M_public_uint64
-for INDEX in LIPP DynamicPGM HybridPGMLIPP
+for INDEX in HybridPGMLIPP # for INDEX in LIPP DynamicPGM HybridPGMLIPP
 do
     execute_uint64_100M ${DATA} $INDEX
 done
@@ -37,7 +37,7 @@ do
             sed -i '1d' $FILE  # Delete the first line
         fi
         # Add the header
-        sed -i '1s/^/index_name,build_time_ns1,build_time_ns2,build_time_ns3,index_size_bytes,mixed_throughput_mops1,mixed_throughput_mops2,mixed_throughput_mops3,search_method,value\n/' $FILE
+        sed -i '1s/^/index_name,build_time_ns1,build_time_ns2,build_time_ns3,index_size_bytes,mixed_throughput_mops1,mixed_throughput_mops2,mixed_throughput_mops3,search_method,value,percent\n/' $FILE
         echo "Header set for $FILE"
     fi
 done
