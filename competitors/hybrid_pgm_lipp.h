@@ -7,7 +7,6 @@
 #include <fstream>
 #include <thread>
 #include <mutex>
-#include <shared_mutex>
 #include <atomic>
 #include <chrono>
 
@@ -56,15 +55,16 @@ class HybridPGMLIPP : public Base<KeyType> {
   }
 
   void Insert(const KeyValue<KeyType>& data, uint32_t thread_id) {
-    // Foreground threads only touch dpgm_active_
+    // Insert into bloom filter first, outside lock (append-only, no coordination needed)
+    bloom_filter_.Insert(data.key);
+    
+    // Then insert into dpgm_active_ with minimal lock hold time
     {
-      std::unique_lock<std::shared_mutex> lock(dpgm_mutex_);
+      std::lock_guard<std::mutex> lock(dpgm_mutex_);
       dpgm_active_.insert(data.key, data.value);
-      bloom_filter_.Insert(data.key);
       dpgm_element_count_++;
       total_keys_++;
     }
-    // Background thread will flush
   }
 
   size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const {
@@ -85,13 +85,13 @@ class HybridPGMLIPP : public Base<KeyType> {
     
     // Check dpgm_active_ for recent inserts.
     if (dpgm_element_count_ > 0) {
-      std::shared_lock<std::shared_mutex> lock(dpgm_mutex_);
+      std::lock_guard<std::mutex> lock(dpgm_mutex_);
       auto it = dpgm_active_.find(lookup_key);
       if (it != dpgm_active_.end()) return it->value();
     }
     // Check dpgm_flush_ (background thread may be flushing)
     if (dpgm_flush_element_count_ > 0) {
-      std::shared_lock<std::shared_mutex> lock(dpgm_flush_mutex_);
+      std::lock_guard<std::mutex> lock(dpgm_flush_mutex_);
       auto it = dpgm_flush_.find(lookup_key);
       if (it != dpgm_flush_.end()) return it->value();
     }
@@ -102,7 +102,7 @@ class HybridPGMLIPP : public Base<KeyType> {
     uint64_t result = 0;
     // dpgm_active_
     if (dpgm_element_count_ > 0) {
-      std::shared_lock<std::shared_mutex> lock(dpgm_mutex_);
+      std::lock_guard<std::mutex> lock(dpgm_mutex_);
       auto it = dpgm_active_.lower_bound(lower_key);
       while (it != dpgm_active_.end() && it->key() <= upper_key) {
         result += it->value();
@@ -111,7 +111,7 @@ class HybridPGMLIPP : public Base<KeyType> {
     }
     // dpgm_flush_
     if (dpgm_flush_element_count_ > 0) {
-      std::shared_lock<std::shared_mutex> lock(dpgm_flush_mutex_);
+      std::lock_guard<std::mutex> lock(dpgm_flush_mutex_);
       auto it = dpgm_flush_.lower_bound(lower_key);
       while (it != dpgm_flush_.end() && it->key() <= upper_key) {
         result += it->value();
@@ -155,38 +155,47 @@ class HybridPGMLIPP : public Base<KeyType> {
  private:
   void FlushThreadLoop() {
     while (!stop_flush_thread_) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));  // More frequent wake-ups
       size_t threshold;
-      {
-        std::unique_lock<std::shared_mutex> lock(dpgm_mutex_);
-        threshold = (total_keys_ * flush_ratio) / 10000;
-        if (threshold == 0) threshold = 1;
-        if (dpgm_element_count_ < threshold) continue;
-        // Swap active buffer to flush buffer
-        {
-          std::unique_lock<std::shared_mutex> flush_lock(dpgm_flush_mutex_);
-          std::swap(dpgm_active_, dpgm_flush_);
-          dpgm_flush_element_count_.store(dpgm_element_count_.load());  // save count of flushed buffer
-          dpgm_element_count_ = 0;
-        }
+      
+      // Use try_lock to avoid blocking inserts: if we can't get the lock, skip this cycle
+      if (!dpgm_mutex_.try_lock()) continue;
+      
+      threshold = (total_keys_ * flush_ratio) / 10000;
+      if (threshold == 0) threshold = 1;
+      if (dpgm_element_count_ < threshold) {
+        dpgm_mutex_.unlock();
+        continue;
       }
-      // Now flush dpgm_flush_ into LIPP (single-threaded, no races)
-      {
-        std::unique_lock<std::shared_mutex> flush_lock(dpgm_flush_mutex_);
-        auto it = dpgm_flush_.lower_bound(std::numeric_limits<KeyType>::min());
-        {
-          // Set modification flag so readers spin briefly and then read lock-free
-          lipp_being_modified_.store(true, std::memory_order_release);
-          while (it != dpgm_flush_.end()) {
-            lipp_.insert(it->key(), it->value());
-            ++it;
-          }
-          lipp_being_modified_.store(false, std::memory_order_release);
-        }
-        dpgm_flush_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
-                                      PGMIndex<KeyType, SearchClass, pgm_error, 16>>();
-        dpgm_flush_element_count_ = 0;
+      
+      // Swap active buffer to flush buffer (still holding dpgm_mutex_)
+      std::unique_lock<std::mutex> flush_lock(dpgm_flush_mutex_, std::defer_lock);
+      if (!flush_lock.try_lock()) {
+        dpgm_mutex_.unlock();
+        continue;  // Both locks busy, skip this cycle
       }
+      
+      std::swap(dpgm_active_, dpgm_flush_);
+      dpgm_flush_element_count_.store(dpgm_element_count_.load());
+      dpgm_element_count_ = 0;
+      
+      dpgm_mutex_.unlock();  // Release dpgm_mutex_ early; we're done with dpgm_active_
+      // Still holding flush_lock
+      
+      // Now merge dpgm_flush_ into LIPP (holding flush_lock)
+      auto it = dpgm_flush_.lower_bound(std::numeric_limits<KeyType>::min());
+      lipp_being_modified_.store(true, std::memory_order_release);
+      while (it != dpgm_flush_.end()) {
+        lipp_.insert(it->key(), it->value());
+        ++it;
+      }
+      lipp_being_modified_.store(false, std::memory_order_release);
+      
+      // Clear flush buffer
+      dpgm_flush_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
+                                    PGMIndex<KeyType, SearchClass, pgm_error, 16>>();
+      dpgm_flush_element_count_ = 0;
+      // flush_lock released here via RAII
     }
   }
 
@@ -197,8 +206,8 @@ class HybridPGMLIPP : public Base<KeyType> {
   LIPP<KeyType, uint64_t> lipp_;
   DTLBloomFilterWrapper<KeyType> bloom_filter_;
 
-  mutable std::shared_mutex dpgm_mutex_; // protects dpgm_active_, total_keys_, dpgm_element_count_
-  mutable std::shared_mutex dpgm_flush_mutex_; // protects dpgm_flush_
+  mutable std::mutex dpgm_mutex_; // protects dpgm_active_, total_keys_, dpgm_element_count_
+  mutable std::mutex dpgm_flush_mutex_; // protects dpgm_flush_
   std::atomic<bool> lipp_being_modified_ = false;
   std::thread flush_thread_;
   std::atomic<bool> stop_flush_thread_ = false;
