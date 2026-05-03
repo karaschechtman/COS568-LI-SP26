@@ -19,7 +19,7 @@ function execute_uint64_100M() {
 mkdir -p ./results
 
 DATA=fb_100M_public_uint64
-for INDEX in HybridPGMLIPP # for INDEX in LIPP DynamicPGM HybridPGMLIPP
+for INDEX in LIPP DynamicPGM HybridPGMLIPP
 do
     execute_uint64_100M ${DATA} $INDEX
 done

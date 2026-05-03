@@ -13,7 +13,7 @@
 
 #include "../util.h"
 #include "base.h"
-#include "simple_bloom_filter.h"
+#include "dtl_bloom_filter_wrapper.h"
 #include "./lipp/src/core/lipp.h"
 #include "pgm_index_dynamic.hpp"
 
@@ -68,6 +68,8 @@ class HybridPGMLIPP : public Base<KeyType> {
   }
 
   size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const {
+    // Early exit on Bloom filter miss (append-only, safe to check without lock).
+    if (!bloom_filter_.Contains(lookup_key)) return util::NOT_FOUND;
     // Check LIPP first (has most data on low-insert workloads).
     uint64_t value;
     // Lock-free read: spin briefly if LIPP is being modified by flush thread.
@@ -75,8 +77,6 @@ class HybridPGMLIPP : public Base<KeyType> {
       // spin
     }
     if (lipp_.find(lookup_key, value)) return value;
-    // Early exit on Bloom filter miss (append-only, safe to check without lock).
-    if (!bloom_filter_.Contains(lookup_key)) return util::NOT_FOUND;
     
     // Skip DPGM checks if both buffers are empty (common on 90% lookup workloads).
     if (dpgm_element_count_ == 0 && dpgm_flush_element_count_ == 0) {
@@ -195,7 +195,7 @@ class HybridPGMLIPP : public Base<KeyType> {
   DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
                   PGMIndex<KeyType, SearchClass, pgm_error, 16>> dpgm_flush_;
   LIPP<KeyType, uint64_t> lipp_;
-  SimpleBloomFilter<KeyType> bloom_filter_;
+  DTLBloomFilterWrapper<KeyType> bloom_filter_;
 
   mutable std::shared_mutex dpgm_mutex_; // protects dpgm_active_, total_keys_, dpgm_element_count_
   mutable std::shared_mutex dpgm_flush_mutex_; // protects dpgm_flush_

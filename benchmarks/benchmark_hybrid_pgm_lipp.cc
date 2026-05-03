@@ -37,6 +37,15 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark,
     benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 256, 100>>();
     benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 512, 100>>();
     benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 1024, 100>>();
+    
+    // Sweep pgm_error with flush_ratio=150 (1.5%)
+    benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 16, 150>>();
+    benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 32, 150>>();
+    benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 64, 150>>();
+    benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 128, 150>>();
+    benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 256, 150>>();
+    benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 512, 150>>();
+    benchmark.template Run<HybridPGMLIPP<uint64_t, Searcher, 1024, 150>>();
   }
 }
 
@@ -53,6 +62,9 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark, const std
       benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 16, 100>>();
       benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 100>>();
       benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 16, 100>>();
+      benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 16, 150>>();
+      benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 150>>();
+      benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 16, 150>>();
     } else if (filename.find("mix") == std::string::npos) {
       if (filename.find("0m") != std::string::npos) {
         benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 512, 10>>();
@@ -64,6 +76,9 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark, const std
         benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 512, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, ExponentialSearch<record>, 256, 100>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 512, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, ExponentialSearch<record>, 256, 150>>();
       } else if (filename.find("1m") != std::string::npos) {
         benchmark.template Run<HybridPGMLIPP<uint64_t, ExponentialSearch<record>, 1024, 10>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, InterpolationSearch<record>, 512, 10>>();
@@ -74,6 +89,9 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark, const std
         benchmark.template Run<HybridPGMLIPP<uint64_t, ExponentialSearch<record>, 1024, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, InterpolationSearch<record>, 512, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 256, 100>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, ExponentialSearch<record>, 1024, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, InterpolationSearch<record>, 512, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 256, 150>>();
       } else if (filename.find("2m") != std::string::npos) {
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 10>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, InterpolationSearch<record>, 512, 10>>();
@@ -84,6 +102,9 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark, const std
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, InterpolationSearch<record>, 512, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 512, 100>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, InterpolationSearch<record>, 512, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 512, 150>>();
       }
     } else {
       if (filename.find("0.050000i") != std::string::npos) {
@@ -96,6 +117,9 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark, const std
         benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 16, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 100>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, LinearSearch<record>, 16, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 150>>();
       } else if (filename.find("0.500000i") != std::string::npos) {
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 10>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 10>>();
@@ -106,6 +130,9 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark, const std
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 100>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 150>>();
       } else if (filename.find("0.900000i") != std::string::npos) {
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 10>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 10>>();
@@ -116,6 +143,9 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark, const std
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 100>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 150>>();
       } else if (filename.find("0.100000i") != std::string::npos) {
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 10>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 10>>();
@@ -126,6 +156,9 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark, const std
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 100>>();
         benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 100>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 512, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 64, 150>>();
+        benchmark.template Run<HybridPGMLIPP<uint64_t, BranchingBinarySearch<record>, 128, 150>>();
       }
     }
   }
