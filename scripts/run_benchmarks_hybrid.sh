@@ -18,10 +18,12 @@ function execute_uint64_100M() {
 
 mkdir -p ./results
 
-DATA=fb_100M_public_uint64
+for DATA in fb_100M_public_uint64 books_100M_public_uint64 osmc_100M_public_uint64
+do
 for INDEX in LIPP DynamicPGM HybridPGMLIPP
 do
     execute_uint64_100M ${DATA} $INDEX
+done
 done
 
 echo "===================Benchmarking complete!===================="

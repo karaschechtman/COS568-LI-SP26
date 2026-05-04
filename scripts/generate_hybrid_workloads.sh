@@ -17,4 +17,6 @@ function generate_uint64_100M() {
 }
 
 # Generate just the fb_100M dataset workloads
-generate_uint64_100M fb_100M_public_uint64
+for dataset in fb_100M_public_uint64 books_100M_public_uint64 osmc_100M_public_uint64; do
+    generate_uint64_100M $dataset
+done

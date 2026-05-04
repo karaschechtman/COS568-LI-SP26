@@ -5,214 +5,131 @@
 #include <iostream>
 #include <vector>
 #include <fstream>
-#include <thread>
-#include <mutex>
-#include <atomic>
-#include <chrono>
-
+#include <limits>
 #include "../util.h"
 #include "base.h"
 #include "dtl_bloom_filter_wrapper.h"
 #include "./lipp/src/core/lipp.h"
 #include "pgm_index_dynamic.hpp"
 
-// HybridPGMLIPP Async flush hybrid index with minimal locking.
-// Only one thread (the background flush thread) ever touches the flush buffer and LIPP during flush.
-// Foreground threads only touch dpgm_active_ and never block except for a short lock during swap.
-// All data structures are private to one thread at a time, so no concurrent access occurs.
-//
-// This design avoids data races without requiring DPGM or LIPP to be threadsafe.
 
 template <class KeyType, class SearchClass, size_t pgm_error = 16, uint32_t flush_ratio = 50>
 class HybridPGMLIPP : public Base<KeyType> {
  public:
   HybridPGMLIPP(const std::vector<int>& params) {}
 
-  ~HybridPGMLIPP() {
-    stop_flush_thread_ = true;
-    if (flush_thread_.joinable()) flush_thread_.join();
-  }
+  ~HybridPGMLIPP() = default;
 
   uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) {
+
     total_keys_ = data.size();
+
     bloom_filter_.Reset(data.size());
     for (const auto& itm : data) {
       bloom_filter_.Insert(itm.key);
     }
-    // Bulk load LIPP
-    std::vector<std::pair<KeyType, uint64_t>> loading_data;
-    loading_data.reserve(data.size());
+
+    std::vector<std::pair<KeyType, uint64_t>> bulk;
+    bulk.reserve(data.size());
     for (const auto& itm : data) {
-      loading_data.push_back(std::make_pair(itm.key, itm.value));
+      bulk.emplace_back(itm.key, itm.value);
     }
-    uint64_t build_time = util::timing([&] {
-      lipp_.bulk_load(loading_data.data(), loading_data.size());
+
+    return util::timing([&] {
+      lipp_.bulk_load(bulk.data(), bulk.size());
     });
-    // Start flush thread
-    stop_flush_thread_ = false;
-    flush_thread_ = std::thread(&HybridPGMLIPP::FlushThreadLoop, this);
-    return build_time;
   }
 
   void Insert(const KeyValue<KeyType>& data, uint32_t thread_id) {
-    // Insert into bloom filter first, outside lock (append-only, no coordination needed)
     bloom_filter_.Insert(data.key);
-    
-    // Then insert into dpgm_active_ with minimal lock hold time
-    {
-      std::lock_guard<std::mutex> lock(dpgm_mutex_);
-      dpgm_active_.insert(data.key, data.value);
-      dpgm_element_count_++;
-      total_keys_++;
+
+    dpgm_.insert(data.key, data.value);
+    dpgm_size_++;
+
+    size_t threshold = (total_keys_ * flush_ratio) / 100;
+
+    // Flush when DPGM reaches the configured ratio of the initial dataset.
+    if (dpgm_size_ >= threshold) {
+      FlushToLIPP();
     }
   }
 
-  size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const {
-    // Early exit on Bloom filter miss (append-only, safe to check without lock).
-    if (!bloom_filter_.Contains(lookup_key)) return util::NOT_FOUND;
-    // Check LIPP first (has most data on low-insert workloads).
+  size_t EqualityLookup(const KeyType& key, uint32_t thread_id) const {
+    if (!bloom_filter_.Contains(key)) return util::NOT_FOUND;
+
     uint64_t value;
-    // Lock-free read: spin briefly if LIPP is being modified by flush thread.
-    while (lipp_being_modified_.load(std::memory_order_acquire)) {
-      // spin
+
+    // LIPP first
+    if (lipp_.find(key, value)) {
+      return value;
     }
-    if (lipp_.find(lookup_key, value)) return value;
-    
-    // Skip DPGM checks if both buffers are empty (common on 90% lookup workloads).
-    if (dpgm_element_count_ == 0 && dpgm_flush_element_count_ == 0) {
-      return util::NOT_FOUND;
+
+    // DPGM fallback
+    auto it = dpgm_.find(key);
+    if (it != dpgm_.end()) {
+      return it->value();
     }
-    
-    // Check dpgm_active_ for recent inserts.
-    if (dpgm_element_count_ > 0) {
-      std::lock_guard<std::mutex> lock(dpgm_mutex_);
-      auto it = dpgm_active_.find(lookup_key);
-      if (it != dpgm_active_.end()) return it->value();
-    }
-    // Check dpgm_flush_ (background thread may be flushing)
-    if (dpgm_flush_element_count_ > 0) {
-      std::lock_guard<std::mutex> lock(dpgm_flush_mutex_);
-      auto it = dpgm_flush_.find(lookup_key);
-      if (it != dpgm_flush_.end()) return it->value();
-    }
+
     return util::NOT_FOUND;
   }
 
-  uint64_t RangeQuery(const KeyType& lower_key, const KeyType& upper_key, uint32_t thread_id) const {
+  uint64_t RangeQuery(const KeyType& lower, const KeyType& upper, uint32_t thread_id) const {
     uint64_t result = 0;
-    // dpgm_active_
-    if (dpgm_element_count_ > 0) {
-      std::lock_guard<std::mutex> lock(dpgm_mutex_);
-      auto it = dpgm_active_.lower_bound(lower_key);
-      while (it != dpgm_active_.end() && it->key() <= upper_key) {
-        result += it->value();
-        ++it;
-      }
+
+    // DPGM scan
+    auto it = dpgm_.lower_bound(lower);
+    while (it != dpgm_.end() && it->key() <= upper) {
+      result += it->value();
+      ++it;
     }
-    // dpgm_flush_
-    if (dpgm_flush_element_count_ > 0) {
-      std::lock_guard<std::mutex> lock(dpgm_flush_mutex_);
-      auto it = dpgm_flush_.lower_bound(lower_key);
-      while (it != dpgm_flush_.end() && it->key() <= upper_key) {
-        result += it->value();
-        ++it;
-      }
+
+    // LIPP scan
+    auto lit = lipp_.lower_bound(lower);
+    while (lit != lipp_.end() && lit->comp.data.key <= upper) {
+      result += lit->comp.data.value;
+      ++lit;
     }
-    // LIPP (lock-free read; spin only while LIPP is being modified)
-    while (lipp_being_modified_.load(std::memory_order_acquire)) {
-      // spin
-    }
-    {
-      auto it = lipp_.lower_bound(lower_key);
-      while (it != lipp_.end() && it->comp.data.key <= upper_key) {
-          result += it->comp.data.value;
-          ++it;
-      }
-    }
+
     return result;
   }
 
-  std::string name() const { return "HybridPGMLIPP"; }
-
-  std::size_t size() const {
-    return dpgm_active_.size_in_bytes() + dpgm_flush_.size_in_bytes() + lipp_.index_size();
+  std::string name() const {
+    return "HybridPGMLIPP";
   }
 
-  bool applicable(bool unique, bool range_query, bool insert, bool multithread, 
-                  const std::string& ops_filename) const {
-    std::string name = SearchClass::name();
-    return name != "LinearAVX" && !multithread && unique;
+  std::size_t size() const {
+    return dpgm_.size_in_bytes() + lipp_.index_size();
   }
 
   std::vector<std::string> variants() const {
-    std::vector<std::string> vec;
-    vec.push_back(SearchClass::name());
-    vec.push_back(std::to_string(pgm_error));
-    vec.push_back(std::to_string(flush_ratio / 100.0) + "%");
-    return vec;
+    return {
+      SearchClass::name(),
+      std::to_string(pgm_error),
+      std::to_string(flush_ratio)
+    };
   }
 
  private:
-  void FlushThreadLoop() {
-    while (!stop_flush_thread_) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));  // More frequent wake-ups
-      size_t threshold;
-      
-      // Use try_lock to avoid blocking inserts: if we can't get the lock, skip this cycle
-      if (!dpgm_mutex_.try_lock()) continue;
-      
-      threshold = (total_keys_ * flush_ratio) / 10000;
-      if (threshold == 0) threshold = 1;
-      if (dpgm_element_count_ < threshold) {
-        dpgm_mutex_.unlock();
-        continue;
-      }
-      
-      // Swap active buffer to flush buffer (still holding dpgm_mutex_)
-      std::unique_lock<std::mutex> flush_lock(dpgm_flush_mutex_, std::defer_lock);
-      if (!flush_lock.try_lock()) {
-        dpgm_mutex_.unlock();
-        continue;  // Both locks busy, skip this cycle
-      }
-      
-      std::swap(dpgm_active_, dpgm_flush_);
-      dpgm_flush_element_count_.store(dpgm_element_count_.load());
-      dpgm_element_count_ = 0;
-      
-      dpgm_mutex_.unlock();  // Release dpgm_mutex_ early; we're done with dpgm_active_
-      // Still holding flush_lock
-      
-      // Now merge dpgm_flush_ into LIPP (holding flush_lock)
-      auto it = dpgm_flush_.lower_bound(std::numeric_limits<KeyType>::min());
-      lipp_being_modified_.store(true, std::memory_order_release);
-      while (it != dpgm_flush_.end()) {
-        lipp_.insert(it->key(), it->value());
-        ++it;
-      }
-      lipp_being_modified_.store(false, std::memory_order_release);
-      
-      // Clear flush buffer
-      dpgm_flush_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
-                                    PGMIndex<KeyType, SearchClass, pgm_error, 16>>();
-      dpgm_flush_element_count_ = 0;
-      // flush_lock released here via RAII
+  void FlushToLIPP() {
+    auto it = dpgm_.lower_bound(std::numeric_limits<KeyType>::min());
+
+    while (it != dpgm_.end()) {
+      lipp_.insert(it->key(), it->value());
+      ++it;
     }
+
+    dpgm_ = DynamicPGMIndex<KeyType, uint64_t, SearchClass,
+                        PGMIndex<KeyType, SearchClass, pgm_error, 16>>();
+    dpgm_size_ = 0;
   }
 
-  DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
-                  PGMIndex<KeyType, SearchClass, pgm_error, 16>> dpgm_active_;
-  DynamicPGMIndex<KeyType, uint64_t, SearchClass, 
-                  PGMIndex<KeyType, SearchClass, pgm_error, 16>> dpgm_flush_;
+ private:
+  DynamicPGMIndex<KeyType, uint64_t, SearchClass,
+      PGMIndex<KeyType, SearchClass, pgm_error, 16>> dpgm_;
+
   LIPP<KeyType, uint64_t> lipp_;
   DTLBloomFilterWrapper<KeyType> bloom_filter_;
 
-  mutable std::mutex dpgm_mutex_; // protects dpgm_active_, total_keys_, dpgm_element_count_
-  mutable std::mutex dpgm_flush_mutex_; // protects dpgm_flush_
-  std::atomic<bool> lipp_being_modified_ = false;
-  std::thread flush_thread_;
-  std::atomic<bool> stop_flush_thread_ = false;
-
-  std::atomic<size_t> total_keys_ = 0;
-  std::atomic<size_t> dpgm_element_count_ = 0;
-  std::atomic<size_t> dpgm_flush_element_count_ = 0;
+  size_t dpgm_size_ = 0;
+  size_t total_keys_ = 0;
 };
